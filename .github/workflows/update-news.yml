@@ -16,7 +16,13 @@ concurrency:
 jobs:
   update:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 30
+
+    env:
+      ARGOS_DEVICE_TYPE: cpu
+      OMP_NUM_THREADS: "2"
+      OPENBLAS_NUM_THREADS: "2"
+      MKL_NUM_THREADS: "2"
 
     steps:
       - name: Checkout repository
@@ -29,11 +35,20 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          cache: pip
 
-      - name: Collect RSS and article details
+      - name: Install free offline translation engine
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install argostranslate
+
+      - name: Collect Bengali RSS and article details
         run: python build_news.py
 
-      - name: Prepare interactive news batches
+      - name: Translate English news to Bangla offline
+        run: python translate_english_news.py
+
+      - name: Prepare interactive Bengali news batches
         run: python prepare_news_radio.py
 
       - name: Validate complete news pipeline
@@ -42,6 +57,7 @@ jobs:
           python - <<'PY'
           import json
           from pathlib import Path
+          from collections import Counter
 
           raw_path = Path("data/news.json")
           radio_path = Path("data/news_radio.json")
@@ -55,13 +71,12 @@ jobs:
           articles = raw["articles"]
           stories = radio["stories"]
 
-          assert articles, "No RSS articles"
+          assert articles, "No articles"
           assert stories, "No radio stories"
           assert len(stories) <= 120
 
           assert (
-              radio["source_generated_at"] ==
-              raw["generated_at"]
+              radio["source_generated_at"] == raw["generated_at"]
           ), "Source snapshot mismatch"
 
           assert (
@@ -70,33 +85,52 @@ jobs:
 
           assert (
               radio["part_char_limit"] == 520
-          ), "Part limit mismatch"
+          ), "TTS part limit mismatch"
 
           expected_intro = (
               "https://raw.githubusercontent.com/"
               "infotaxrana-ai/xiaozhi-news-static/"
               "main/intro.mp3"
           )
+
           assert radio["intro_url"] == expected_intro
+
+          for article in articles:
+              assert article["title"]
+              assert article["url"]
+              assert article.get("language", "bn") == "bn"
 
           total_parts = 0
 
           for story in stories:
               assert story["title"]
-              assert story["part_count"] == len(story["parts"])
               assert story["parts"]
+              assert story["part_count"] == len(story["parts"])
 
               for part in story["parts"]:
                   assert isinstance(part, str)
                   assert 0 < len(part) <= 520
                   total_parts += 1
 
-          print("FULL NEWS PIPELINE VALIDATION: PASS")
-          print("Raw articles:", len(articles))
+          assert radio_path.stat().st_size <= 340000, (
+              "Radio JSON exceeds byte limit"
+          )
+
+          print("NEWS PIPELINE VALIDATION: PASS")
+          print("Raw news:", len(articles))
           print("Radio stories:", len(stories))
-          print("TTS parts:", total_parts)
-          print("Source generated:", raw["generated_at"])
-          print("Intro:", radio["intro_url"])
+          print("Total TTS parts:", total_parts)
+          print("Radio JSON bytes:", radio_path.stat().st_size)
+
+          print(
+              "Radio sources:",
+              dict(Counter(s["source"] for s in stories))
+          )
+
+          print(
+              "Offline translation:",
+              raw.get("offline_translation", {})
+          )
           PY
 
       - name: Publish both JSON files safely
@@ -114,7 +148,7 @@ jobs:
             exit 0
           fi
 
-          git commit -m "chore: refresh Xiaozhi news and radio"
+          git commit -m "chore: refresh multilingual Bengali news"
 
           for attempt in 1 2 3; do
             if git pull --rebase origin main &&
@@ -124,7 +158,6 @@ jobs:
             fi
 
             git rebase --abort 2>/dev/null || true
-
             echo "Publish attempt $attempt failed"
             sleep 5
           done
