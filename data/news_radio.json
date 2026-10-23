@@ -3,6 +3,26 @@
   "radio_version": "3.9-compatible-data-v1",
   "source_generated_at": "2026-10-23T10:01:07.826815+00:00",
   "intro_url": "https://raw.githubusercontent.com/infotaxrana-ai/xiaozhi-news-static/main/intro.mp3",
+  "anchor_intro": {
+    "enabled": true,
+    "version": 2,
+    "date_source": "github",
+    "clock_source": "esp32",
+    "timezone": "Asia/Dhaka",
+    "date_generated_for": "2026-10-23",
+    "english_date": "শুক্রবার, ২৩ অক্টোবর ২০২৬",
+    "bangla_date": "৭ কার্তিক ১৪৩৩ বঙ্গাব্দ",
+    "lines": [
+      "আসসালামু আলাইকুম।",
+      "আমি মিসেস এলেক্সা।",
+      "এলেক্সার বিগত ছত্রিশ ঘণ্টার সংবাদ বুলেটিনে আপনাকে স্বাগতম।",
+      "আজ শুক্রবার, ২৩ অক্টোবর ২০২৬ খ্রিষ্টাব্দ।",
+      "বাংলা ৭ কার্তিক ১৪৩৩ বঙ্গাব্দ।",
+      "বাংলাদেশ সময় এখন {time}।",
+      "সংবাদের উৎস হলো বিবিসি বাংলা, প্রথম আলো, জাগো নিউজ টুয়েন্টিফোর, বিডি টুয়েন্টিফোর লাইভ এবং বাংলাদেশ টুডে।",
+      "চলুন, শুরু করা যাক।"
+    ]
+  },
   "part_char_limit": 520,
   "story_count": 120,
   "interactive": true,
