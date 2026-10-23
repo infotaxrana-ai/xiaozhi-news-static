@@ -1,0 +1,89 @@
+
+name: Prepare Xiaozhi News Radio
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: xiaozhi-news-radio-prepare
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Prepare interactive news parts
+        run: python prepare_news_radio.py
+
+      - name: Validate generated news radio
+        run: |
+          python - <<'PY'
+          import json
+
+          with open("data/news_radio.json", encoding="utf-8") as f:
+              data = json.load(f)
+
+          stories = data["stories"]
+          assert stories
+          assert len(stories) <= 120
+
+          for story in stories:
+              assert story["part_count"] == len(story["parts"])
+              assert all(
+                  0 < len(part) <= 520
+                  for part in story["parts"]
+              )
+
+          print("VALIDATION PASSED")
+          print("Stories:", len(stories))
+          print(
+              "Parts:",
+              sum(s["part_count"] for s in stories)
+          )
+          PY
+
+      - name: Commit news radio JSON
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add data/news_radio.json
+
+          if git diff --cached --quiet; then
+            echo "No changes"
+            exit 0
+          fi
+
+          git commit -m "chore: prepare news radio parts"
+
+          for attempt in 1 2 3; do
+            if git pull --rebase origin main &&
+               git push origin HEAD:main; then
+              echo "NEWS RADIO JSON PUBLISHED"
+              exit 0
+            fi
+
+            git rebase --abort 2>/dev/null || true
+            echo "Push retry $attempt"
+            sleep 5
+          done
+
+          echo "Publishing failed"
+          exit 1
