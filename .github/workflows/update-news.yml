@@ -10,13 +10,13 @@ permissions:
   contents: write
 
 concurrency:
-  group: xiaozhi-news-refresh
+  group: xiaozhi-news-radio-prepare
   cancel-in-progress: false
 
 jobs:
   update:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 12
 
     steps:
       - name: Checkout repository
@@ -30,10 +30,76 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Collect and publish news
+      - name: Collect RSS and article details
         run: python build_news.py
 
-      - name: Commit and push JSON safely
+      - name: Prepare interactive news batches
+        run: python prepare_news_radio.py
+
+      - name: Validate complete news pipeline
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          raw_path = Path("data/news.json")
+          radio_path = Path("data/news_radio.json")
+
+          assert raw_path.is_file(), "news.json missing"
+          assert radio_path.is_file(), "news_radio.json missing"
+
+          raw = json.loads(raw_path.read_text(encoding="utf-8"))
+          radio = json.loads(radio_path.read_text(encoding="utf-8"))
+
+          articles = raw["articles"]
+          stories = radio["stories"]
+
+          assert articles, "No RSS articles"
+          assert stories, "No radio stories"
+          assert len(stories) <= 120
+
+          assert (
+              radio["source_generated_at"] ==
+              raw["generated_at"]
+          ), "Source snapshot mismatch"
+
+          assert (
+              radio["story_count"] == len(stories)
+          ), "Story count mismatch"
+
+          assert (
+              radio["part_char_limit"] == 520
+          ), "Part limit mismatch"
+
+          expected_intro = (
+              "https://raw.githubusercontent.com/"
+              "infotaxrana-ai/xiaozhi-news-static/"
+              "main/intro.mp3"
+          )
+          assert radio["intro_url"] == expected_intro
+
+          total_parts = 0
+
+          for story in stories:
+              assert story["title"]
+              assert story["part_count"] == len(story["parts"])
+              assert story["parts"]
+
+              for part in story["parts"]:
+                  assert isinstance(part, str)
+                  assert 0 < len(part) <= 520
+                  total_parts += 1
+
+          print("FULL NEWS PIPELINE VALIDATION: PASS")
+          print("Raw articles:", len(articles))
+          print("Radio stories:", len(stories))
+          print("TTS parts:", total_parts)
+          print("Source generated:", raw["generated_at"])
+          print("Intro:", radio["intro_url"])
+          PY
+
+      - name: Publish both JSON files safely
         shell: bash
         run: |
           set -euo pipefail
@@ -41,32 +107,27 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          if [ ! -f data/news.json ]; then
-            echo "ERROR: news.json missing"
-            exit 1
-          fi
-
-          git add data/news.json
+          git add data/news.json data/news_radio.json
 
           if git diff --cached --quiet; then
-            echo "No changes to publish"
+            echo "No news changes"
             exit 0
           fi
 
-          git commit -m "chore: refresh RSS news snapshot"
+          git commit -m "chore: refresh Xiaozhi news and radio"
 
           for attempt in 1 2 3; do
             if git pull --rebase origin main &&
                git push origin HEAD:main; then
-              echo "SUCCESS: News JSON published"
+              echo "NEWS AND RADIO PUBLISHED"
               exit 0
             fi
 
             git rebase --abort 2>/dev/null || true
 
-            echo "Attempt $attempt failed"
+            echo "Publish attempt $attempt failed"
             sleep 5
           done
 
-          echo "ERROR: News JSON publishing failed"
+          echo "ERROR: News publishing failed"
           exit 1
