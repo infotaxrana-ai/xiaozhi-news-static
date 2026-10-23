@@ -1,10 +1,12 @@
 
 #!/usr/bin/env python3
-"""Xiaozhi radio JSON builder; existing firmware schema v1."""
+"""Xiaozhi News Radio v2 - Random Mixed Sources."""
 
 import json
+import random
 import re
 
+from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -17,10 +19,10 @@ MAX_STORIES = 120
 MAX_BYTES = 340000
 
 BD_ZONE = timezone(timedelta(hours=6))
+RNG = random.SystemRandom()
 
 BN_DIGITS = str.maketrans(
-    "0123456789",
-    "০১২৩৪৫৬৭৮৯"
+    "0123456789", "০১২৩৪৫৬৭৮৯"
 )
 
 BN_WEEKDAYS = [
@@ -54,13 +56,10 @@ def bengali(value):
     return str(value).translate(BN_DIGITS)
 
 
-def leap(y):
+def leap(year):
     return (
-        y % 400 == 0
-        or (
-            y % 4 == 0
-            and y % 100 != 0
-        )
+        year % 400 == 0
+        or (year % 4 == 0 and year % 100 != 0)
     )
 
 
@@ -75,35 +74,27 @@ def bangla_date(today):
         today - date(start, 4, 14)
     ).days
 
-    month_days = (
+    days = (
         [31] * 6
         + [30] * 4
-        + [
-            30 if leap(start + 1) else 29,
-            30
-        ]
+        + [30 if leap(start + 1) else 29, 30]
     )
 
-    for month, days in zip(
-        BN_MONTHS,
-        month_days
-    ):
-        if elapsed < days:
+    for month, count in zip(BN_MONTHS, days):
+        if elapsed < count:
             return (
                 f"{bengali(elapsed + 1)} "
                 f"{month} "
                 f"{bengali(start - 593)} বঙ্গাব্দ"
             )
 
-        elapsed -= days
+        elapsed -= count
 
     raise ValueError("Invalid Bengali date")
 
 
 def intro():
-    today = datetime.now(
-        BD_ZONE
-    ).date()
+    today = datetime.now(BD_ZONE).date()
 
     english_date = (
         f"{BN_WEEKDAYS[today.weekday()]}, "
@@ -142,9 +133,7 @@ def intro():
 
 def normalize(value):
     return re.sub(
-        r"\s+",
-        " ",
-        str(value or "")
+        r"\s+", " ", str(value or "")
     ).strip()
 
 
@@ -157,45 +146,30 @@ def parts_of(value):
             "সংবাদ উৎসে পাওয়া যায়নি।"
         ]
 
-    sentences = re.split(
-        r"(?<=[।!?])\s+",
-        text
-    )
-
     parts = []
     current = ""
 
-    for sentence in sentences:
-        for word in sentence.split():
-
-            while len(word) > PART_CHARS:
-                if current:
-                    parts.append(current)
-                    current = ""
-
-                parts.append(
-                    word[:PART_CHARS]
-                )
-
-                word = word[PART_CHARS:]
-
-            if not word:
-                continue
-
-            if not current:
-                current = word
-
-            elif (
-                len(current)
-                + len(word)
-                + 1
-                <= PART_CHARS
-            ):
-                current += " " + word
-
-            else:
+    for word in text.split():
+        while len(word) > PART_CHARS:
+            if current:
                 parts.append(current)
-                current = word
+                current = ""
+
+            parts.append(word[:PART_CHARS])
+            word = word[PART_CHARS:]
+
+        if not word:
+            continue
+
+        if not current:
+            current = word
+
+        elif len(current) + len(word) + 1 <= PART_CHARS:
+            current += " " + word
+
+        else:
+            parts.append(current)
+            current = word
 
     if current:
         parts.append(current)
@@ -203,68 +177,147 @@ def parts_of(value):
     return parts
 
 
+def mixed_sources(articles):
+    """
+    Randomly interleave different publishers.
+
+    Avoid consecutive stories from the same source
+    whenever another source has stories available.
+    """
+
+    groups = defaultdict(list)
+
+    for article in articles:
+        source = normalize(
+            article.get("source") or "অজানা উৎস"
+        )
+
+        groups[source].append(article)
+
+    # Keep fresher stories toward the front
+    # of each publisher's queue.
+    for items in groups.values():
+        items.sort(
+            key=lambda a: a.get("published") or 0,
+            reverse=True
+        )
+
+        # Shuffle inside small freshness windows.
+        for i in range(0, len(items), 5):
+            block = items[i:i + 5]
+            RNG.shuffle(block)
+            items[i:i + 5] = block
+
+    positions = {
+        name: 0 for name in groups
+    }
+
+    output = []
+    previous_source = None
+
+    while len(output) < MAX_STORIES:
+        available = [
+            name
+            for name, items in groups.items()
+            if positions[name] < len(items)
+        ]
+
+        if not available:
+            break
+
+        alternatives = [
+            name for name in available
+            if name != previous_source
+        ]
+
+        if alternatives:
+            available = alternatives
+
+        # Prioritize sources represented less often
+        # in the output, with random tie-breaking.
+        played = Counter(
+            item.get("source") for item in output
+        )
+
+        smallest = min(
+            played[name] for name in available
+        )
+
+        choices = [
+            name for name in available
+            if played[name] == smallest
+        ]
+
+        chosen = RNG.choice(choices)
+
+        output.append(
+            groups[chosen][positions[chosen]]
+        )
+
+        positions[chosen] += 1
+        previous_source = chosen
+
+    return output
+
+
+def make_story(article, number):
+    title = normalize(article.get("title"))
+    url = str(article.get("url") or "")
+
+    if not title or not url:
+        return None
+
+    parts = parts_of(article.get("detail"))
+
+    return {
+        "id": number,
+        "title": title,
+        "source": normalize(article.get("source")),
+        "category": normalize(
+            article.get("category") or "বাংলাদেশ"
+        ),
+        "url": url,
+        "published": article.get("published"),
+        "published_iso": article.get("published_iso"),
+        "part_count": len(parts),
+        "parts": parts
+    }
+
+
 def main():
-    source = json.loads(
+    raw = json.loads(
         SOURCE.read_text(encoding="utf-8")
     )
 
-    articles = source.get(
-        "articles",
-        []
-    )
+    articles = raw.get("articles", [])
 
     if not articles:
-        raise SystemExit(
-            "ERROR: No news articles"
-        )
+        raise SystemExit("ERROR: No news articles")
+
+    valid = [
+        article for article in articles
+        if article.get("title") and article.get("url")
+    ]
+
+    ordered = mixed_sources(valid)
 
     stories = []
 
-    for a in articles[:MAX_STORIES]:
-
-        title = normalize(
-            a.get("title")
+    for article in ordered:
+        story = make_story(
+            article, len(stories) + 1
         )
 
-        url = str(
-            a.get("url") or ""
-        )
-
-        if not title or not url:
-            continue
-
-        parts = parts_of(
-            a.get("detail")
-        )
-
-        stories.append({
-            "id": len(stories) + 1,
-            "title": title,
-            "source": normalize(
-                a.get("source")
-            ),
-            "category": normalize(
-                a.get("category")
-                or "বাংলাদেশ"
-            ),
-            "url": url,
-            "published": a.get("published"),
-            "published_iso": a.get("published_iso"),
-            "part_count": len(parts),
-            "parts": parts
-        })
+        if story:
+            stories.append(story)
 
     if not stories:
-        raise SystemExit(
-            "ERROR: No valid stories"
-        )
+        raise SystemExit("ERROR: No valid stories")
 
     payload = {
         "schema_version": 1,
         "radio_version": "3.9-compatible-data-v1",
-        "source_generated_at": source.get(
-            "generated_at"
-        ),
+        "source_generated_at": raw.get("generated_at"),
         "intro_url": INTRO_URL,
         "anchor_intro": intro(),
         "part_char_limit": PART_CHARS,
@@ -292,55 +345,57 @@ def main():
 
     data = encode()
 
-    # Never exceed the ESP32 download budget.
-    # Preserve each retained story's complete details.
-    # Drop oldest stories rather than cutting details.
-
-    while (
-        len(data) > MAX_BYTES
-        and len(stories) > 1
-    ):
+    # Keep complete detail parts and stay below
+    # the firmware's existing download budget.
+    while len(data) > MAX_BYTES and len(stories) > 1:
         stories.pop()
-
         payload["story_count"] = len(stories)
-
         data = encode()
 
     if len(data) > MAX_BYTES:
         raise SystemExit(
-            "ERROR: Radio JSON exceeds 340KB"
+            "ERROR: News Radio JSON exceeds 340KB"
         )
+
+    # Keep IDs sequential after size trimming.
+    for index, story in enumerate(stories, start=1):
+        story["id"] = index
 
     OUTPUT.parent.mkdir(
         parents=True,
         exist_ok=True
     )
 
-    OUTPUT.write_bytes(data)
+    OUTPUT.write_bytes(encode())
 
     print("NEWS RADIO BUILDER SUCCESS")
+    print("RADIO ORDER: RANDOM MIXED SOURCES")
     print("Stories:", len(stories))
 
     print(
+        "Source distribution:",
+        dict(Counter(s["source"] for s in stories))
+    )
+
+    print(
+        "First 15 sources:",
+        [s["source"] for s in stories[:15]]
+    )
+
+    print(
+        "Consecutive same-source pairs:",
+        sum(
+            stories[i]["source"] == stories[i - 1]["source"]
+            for i in range(1, len(stories))
+        )
+    )
+
+    print(
         "Total parts:",
-        sum(
-            s["part_count"]
-            for s in stories
-        )
+        sum(s["part_count"] for s in stories)
     )
 
-    print(
-        "Multi-part stories:",
-        sum(
-            s["part_count"] > 1
-            for s in stories
-        )
-    )
-
-    print(
-        "JSON bytes:",
-        len(data)
-    )
+    print("JSON bytes:", len(encode()))
 
 
 if __name__ == "__main__":
