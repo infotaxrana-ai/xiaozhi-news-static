@@ -1,9 +1,6 @@
 
 #!/usr/bin/env python3
-# Xiaozhi Serverless Bengali News Collector v2.0
-# RSS + Article Extraction + Safe Fallback
-# Python Standard Library Only
-# No Render, VPS or API Key required
+"""Xiaozhi Bengali news collector. Python standard library only."""
 
 import concurrent.futures
 import datetime as dt
@@ -11,370 +8,293 @@ import email.utils
 import html
 import json
 import re
-import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 
 from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import urlparse, urljoin, urlunparse
-
+from urllib.parse import urlparse, urlunparse
 
 UTC = dt.timezone.utc
 NOW = dt.datetime.now(UTC)
 WINDOW = dt.timedelta(hours=36)
 
-OUTPUT = Path(__file__).resolve().parent / "data" / "news.json"
+OUT = Path(__file__).resolve().parent / "data" / "news.json"
 
 MAX_ARTICLES = 120
-MAX_REPORT_CHARS = 1650
-MAX_RSS_BYTES = 2_000_000
+MAX_REPORT_CHARS = 2400
 MAX_HTML_BYTES = 1_500_000
-MAX_ARTICLE_REQUESTS = 45
+MAX_RSS_BYTES = 2_000_000
+MAX_ARTICLE_REQUESTS = 100
 
-MIN_RSS_DETAIL = 500
-MIN_EXTRACTED_GAIN = 100
+MIN_RSS_DETAIL = 1150
+MIN_EXTRA_GAIN = 80
 
 SOURCES = [
-    (
-        "প্রথম আলো",
-        "https://www.prothomalo.com/feed/",
-        "bn",
-    ),
-    (
-        "জাগোনিউজ২৪",
-        "https://www.jagonews24.com/rss/rss.xml",
-        "bn",
-    ),
-    (
-        "বিডি২৪লাইভ",
-        "https://www.bd24live.com/feed",
-        "bn",
-    ),
-    (
-        "বিবিসি বাংলা",
-        "https://feeds.bbci.co.uk/bengali/rss.xml",
-        "bn",
-    ),
-    (
-        "বাংলাদেশ টুডে",
-        "https://thebangladeshtoday.com/feed/",
-        "en",
-    ),
+    ("প্রথম আলো", "https://www.prothomalo.com/feed/", "bn"),
+    ("জাগোনিউজ২৪", "https://www.jagonews24.com/rss/rss.xml", "bn"),
+    ("বিডি২৪লাইভ", "https://www.bd24live.com/feed", "bn"),
+    ("বিবিসি বাংলা", "https://feeds.bbci.co.uk/bengali/rss.xml", "bn"),
+    ("বাংলাদেশ টুডে", "https://thebangladeshtoday.com/feed/", "en"),
 ]
 
 HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (compatible; "
-        "XiaozhiNewsCollector/2.0)"
-    ),
-    "Accept": (
-        "text/html,application/xhtml+xml,"
-        "application/rss+xml,application/atom+xml,"
-        "application/xml,text/xml,*/*"
-    ),
-    "Accept-Language": "bn-BD,bn;q=0.9,en;q=0.7",
+    "User-Agent": "Mozilla/5.0 (compatible; XiaozhiNewsCollector/3.0)",
+    "Accept": "text/html,application/rss+xml,application/xml,*/*",
+    "Accept-Language": "bn-BD,bn;q=0.9,en;q=0.5",
 }
 
-BLOCKED_TAGS = {
-    "script", "style", "nav", "footer",
-    "header", "aside", "form", "svg",
-    "noscript", "iframe", "button",
+BAD = {
+    "script", "style", "nav", "footer", "header",
+    "aside", "form", "svg", "noscript", "iframe", "button"
 }
 
 
 def clean(value, limit=MAX_REPORT_CHARS):
-    value = str(value or "")
-    value = re.sub(r"<[^>]+>", " ", value)
-    value = html.unescape(value)
-    value = re.sub(r"\s+", " ", value)
-    return value.strip()[:limit]
+    value = html.unescape(
+        re.sub(r"<[^>]*>", " ", str(value or ""))
+    )
+    return re.sub(r"\s+", " ", value).strip()[:limit]
 
 
-def category(text):
-    text = str(text or "").lower()
+def category(value):
+    value = value.lower()
 
     rules = [
-        (
-            "রাজনীতি",
-            r"রাজনীতি|নির্বাচন|সংসদ|ভোট",
-        ),
-        (
-            "খেলাধুলা",
-            r"ক্রিকেট|ফুটবল|খেলাধুলা|ম্যাচ|"
-            r"বিশ্বকাপ|বিসিবি",
-        ),
-        (
-            "প্রযুক্তি",
-            r"প্রযুক্তি|বিজ্ঞান|কৃত্রিম বুদ্ধিমত্তা|"
-            r"স্মার্টফোন|ইন্টারনেট|এআই",
-        ),
-        (
-            "অর্থনীতি",
-            r"অর্থনীতি|বাণিজ্য|ব্যবসা|শেয়ারবাজার|"
-            r"ব্যাংক|মূল্যস্ফীতি",
-        ),
-        (
-            "আন্তর্জাতিক",
-            r"আন্তর্জাতিক|বিশ্ব|যুক্তরাষ্ট্র|"
-            r"রাশিয়া|চীন|গাজা|ইসরায়েল",
-        ),
-        (
-            "বিনোদন",
-            r"বিনোদন|সিনেমা|অভিনেতা|"
-            r"অভিনেত্রী|চলচ্চিত্র",
-        ),
+        ("রাজনীতি", r"রাজনীতি|নির্বাচন|সংসদ|ভোট"),
+        ("খেলাধুলা", r"ক্রিকেট|ফুটবল|খেলাধুলা|ম্যাচ|বিশ্বকাপ|বিসিবি"),
+        ("প্রযুক্তি", r"প্রযুক্তি|বিজ্ঞান|কৃত্রিম বুদ্ধিমত্তা|স্মার্টফোন|ইন্টারনেট|এআই"),
+        ("অর্থনীতি", r"অর্থনীতি|বাণিজ্য|ব্যবসা|শেয়ারবাজার|ব্যাংক|মূল্যস্ফীতি"),
+        ("আন্তর্জাতিক", r"আন্তর্জাতিক|বিশ্ব|যুক্তরাষ্ট্র|রাশিয়া|চীন|গাজা|ইসরায়েল"),
+        ("বিনোদন", r"বিনোদন|সিনেমা|অভিনেতা|অভিনেত্রী|চলচ্চিত্র"),
     ]
 
-    for name, pattern in rules:
-        if re.search(pattern, text):
+    for name, words in rules:
+        if re.search(words, value):
             return name
 
     return "বাংলাদেশ"
 
 
-def parse_date(value):
-    if not value:
-        return None
-
+def date_from(value):
     try:
-        parsed = email.utils.parsedate_to_datetime(value)
-        if parsed:
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=UTC)
-            return parsed.astimezone(UTC)
+        d = email.utils.parsedate_to_datetime(value)
     except (TypeError, ValueError):
-        pass
+        try:
+            d = dt.datetime.fromisoformat(
+                value.replace("Z", "+00:00")
+            )
+        except (ValueError, AttributeError):
+            return None
 
-    try:
-        parsed = dt.datetime.fromisoformat(
-            value.replace("Z", "+00:00")
-        )
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=UTC)
-        return parsed.astimezone(UTC)
-    except (TypeError, ValueError):
-        return None
+    if d.tzinfo is None:
+        d = d.replace(tzinfo=UTC)
+
+    return d.astimezone(UTC)
 
 
 def field(node, *names):
     for name in names:
-        target = node.find(name)
-        if target is not None:
-            text = "".join(target.itertext()).strip()
-            if text:
-                return text
+        found = node.find(name)
+
+        if found is not None:
+            value = "".join(found.itertext()).strip()
+            if value:
+                return value
+
     return ""
 
 
-def safe_article_url(url, source_url):
+def safe_url(url, feed):
     try:
-        target = urlparse(url)
-        source = urlparse(source_url)
+        u = urlparse(url)
+        source = urlparse(feed)
 
-        if target.scheme != "https":
+        if (
+            u.scheme != "https"
+            or not u.hostname
+            or not source.hostname
+        ):
             return ""
 
-        if not target.hostname or not source.hostname:
+        if (
+            u.port not in (None, 443)
+            or u.username
+            or u.password
+        ):
             return ""
 
-        host = target.hostname.lower()
-        allowed = source.hostname.lower()
+        host = u.hostname.lower()
+        root = source.hostname.lower().removeprefix("www.")
 
-        # Allow only the RSS source domain/subdomains.
-        if host != allowed and not host.endswith("." + allowed):
-            # www.example.com versus example.com
-            root = allowed.removeprefix("www.")
-            if host != root and not host.endswith("." + root):
-                return ""
-
-        if target.port not in (None, 443):
+        if host != root and not host.endswith("." + root):
             return ""
 
-        if target.username or target.password:
-            return ""
-
-        if target.path.lower().endswith(
+        if u.path.lower().endswith(
             (".pdf", ".mp3", ".mp4", ".zip")
         ):
             return ""
 
         return urlunparse((
             "https",
-            target.netloc,
-            target.path or "/",
+            u.netloc,
+            u.path or "/",
             "",
-            target.query,
-            "",
+            u.query,
+            ""
         ))
+
     except ValueError:
         return ""
 
 
-def download(url, max_bytes, timeout=10):
-    request = urllib.request.Request(
+def fetch(url, limit, timeout=10):
+    req = urllib.request.Request(
         url,
-        headers=HEADERS,
+        headers=HEADERS
     )
 
     with urllib.request.urlopen(
-        request,
-        timeout=timeout,
-    ) as response:
+        req,
+        timeout=timeout
+    ) as res:
 
-        final_url = response.geturl()
-        parsed = urlparse(final_url)
+        if urlparse(res.geturl()).scheme != "https":
+            raise ValueError("Insecure redirect")
 
-        if parsed.scheme != "https":
-            raise ValueError("Non-HTTPS redirect")
+        content = res.read(limit + 1)
 
-        content = response.read(max_bytes + 1)
-
-        if len(content) > max_bytes:
+        if len(content) > limit:
             raise ValueError("Response too large")
 
-        return content, response.headers, final_url
+        return content, res.headers, res.geturl()
 
 
-class ArticleHTMLParser(HTMLParser):
+class BodyParser(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
+
         self.stack = []
         self.paragraphs = []
         self.current = []
-        self.in_p = 0
-        self.jsonld = []
+        self.scripts = []
         self.in_jsonld = False
+        self.in_p = False
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
-        tag = tag.lower()
         self.stack.append(tag)
 
-        if tag == "script" and (
-            "ld+json" in attrs.get("type", "").lower()
+        if (
+            tag == "script"
+            and "ld+json" in attrs.get("type", "").lower()
         ):
             self.in_jsonld = True
-            self.jsonld.append("")
+            self.scripts.append("")
 
-        if tag == "p":
-            self.in_p += 1
-            if self.in_p == 1:
-                self.current = []
+        if tag == "p" and not self.in_p:
+            self.in_p = True
+            self.current = []
+
+    def handle_data(self, data):
+        if self.in_jsonld and self.scripts:
+            self.scripts[-1] += data
+
+        if (
+            self.in_p
+            and not any(t in BAD for t in self.stack)
+        ):
+            self.current.append(data)
 
     def handle_endtag(self, tag):
-        tag = tag.lower()
-
         if tag == "p" and self.in_p:
-            self.in_p -= 1
-            if self.in_p == 0:
-                paragraph = clean(
-                    "".join(self.current),
-                    2000,
-                )
-                if len(paragraph) >= 35:
-                    self.paragraphs.append(paragraph)
-                self.current = []
+            p = clean("".join(self.current), 1800)
+
+            if len(p) >= 40:
+                self.paragraphs.append(p)
+
+            self.in_p = False
+            self.current = []
 
         if tag == "script":
             self.in_jsonld = False
 
         if tag in self.stack:
-            index = len(self.stack) - 1 - (
-                self.stack[::-1].index(tag)
+            i = (
+                len(self.stack) - 1
+                - self.stack[::-1].index(tag)
             )
-            self.stack = self.stack[:index]
-
-    def handle_data(self, data):
-        if self.in_jsonld and self.jsonld:
-            self.jsonld[-1] += data
-
-        if self.in_p and not any(
-            tag in BLOCKED_TAGS
-            for tag in self.stack
-        ):
-            self.current.append(data)
+            self.stack = self.stack[:i]
 
 
-def jsonld_bodies(obj):
-    bodies = []
+def ld_bodies(value):
+    if isinstance(value, list):
+        for x in value:
+            yield from ld_bodies(x)
 
-    if isinstance(obj, list):
-        for item in obj:
-            bodies.extend(jsonld_bodies(item))
+    if isinstance(value, dict):
+        body = value.get("articleBody")
 
-    elif isinstance(obj, dict):
-        article_body = obj.get("articleBody")
-
-        if isinstance(article_body, str):
-            value = clean(
-                article_body,
-                MAX_REPORT_CHARS,
-            )
-            if value:
-                bodies.append(value)
+        if isinstance(body, str):
+            yield clean(body)
 
         for key in ("@graph", "mainEntity"):
-            if key in obj:
-                bodies.extend(
-                    jsonld_bodies(obj[key])
-                )
-
-    return bodies
+            if key in value:
+                yield from ld_bodies(value[key])
 
 
-def extract_article(url, source_url):
-    safe = safe_article_url(
-        url,
-        source_url,
+def extract(article):
+    url = safe_url(
+        article["url"],
+        article["source_feed"]
     )
 
-    if not safe:
-        return "", "URL not allowed"
+    if not url:
+        return ""
 
     try:
-        raw, headers, final_url = download(
-            safe,
+        raw, headers, final = fetch(
+            url,
             MAX_HTML_BYTES,
-            timeout=8,
+            9
         )
 
-        if not safe_article_url(
-            final_url,
-            source_url,
+        if not safe_url(
+            final,
+            article["source_feed"]
         ):
-            return "", "Redirect domain not allowed"
+            return ""
 
-        content_type = headers.get(
+        if "html" not in headers.get(
             "Content-Type", ""
-        ).lower()
+        ).lower():
+            return ""
 
-        if "html" not in content_type:
-            return "", "Not an HTML page"
-
-        charset = headers.get_content_charset() or "utf-8"
+        charset = (
+            headers.get_content_charset()
+            or "utf-8"
+        )
 
         try:
             page = raw.decode(
                 charset,
-                errors="replace",
+                errors="replace"
             )
         except LookupError:
             page = raw.decode(
                 "utf-8",
-                errors="replace",
+                errors="replace"
             )
 
-        parser = ArticleHTMLParser()
+        parser = BodyParser()
         parser.feed(page)
 
         candidates = []
 
-        for script in parser.jsonld:
+        for script in parser.scripts:
             try:
-                obj = json.loads(script)
                 candidates.extend(
-                    jsonld_bodies(obj)
+                    ld_bodies(json.loads(script))
                 )
             except (ValueError, TypeError):
                 pass
@@ -383,87 +303,79 @@ def extract_article(url, source_url):
         paragraphs = []
 
         for paragraph in parser.paragraphs:
-            normalized = re.sub(
+            token = re.sub(
                 r"\s+",
                 "",
-                paragraph,
+                paragraph
             )
 
-            if normalized in seen:
-                continue
+            if token not in seen:
+                seen.add(token)
+                paragraphs.append(paragraph)
 
-            seen.add(normalized)
-            paragraphs.append(paragraph)
-
-            if len(paragraphs) >= 16:
+            if len(paragraphs) >= 18:
                 break
 
         if paragraphs:
             candidates.append(
-                clean(
-                    " ".join(paragraphs),
-                    MAX_REPORT_CHARS,
-                )
+                clean(" ".join(paragraphs))
             )
 
-        if not candidates:
-            return "", "No article text found"
-
-        best = max(
+        return max(
             candidates,
             key=len,
+            default=""
         )
 
-        return best, None
-
-    except Exception as exc:
-        return "", (
-            f"{type(exc).__name__}: "
-            f"{str(exc)[:100]}"
-        )
+    except Exception:
+        return ""
 
 
-def get_source(source):
-    name, url, language = source
+def get_source(spec):
+    name, feed, language = spec
 
     try:
-        raw, _, _ = download(
-            url,
+        raw, _, _ = fetch(
+            feed,
             MAX_RSS_BYTES,
-            timeout=12,
+            12
         )
 
         root = ET.fromstring(raw)
 
-        items = root.findall(".//item")
-
-        if not items:
-            items = root.findall(
+        nodes = (
+            root.findall(".//item")
+            or root.findall(
                 "{http://www.w3.org/2005/Atom}entry"
             )
+        )
 
-        articles = []
+        result = []
 
-        for node in items[:100]:
+        for node in nodes[:100]:
             title = clean(
                 field(
                     node,
                     "title",
-                    "{http://www.w3.org/2005/Atom}title",
+                    "{http://www.w3.org/2005/Atom}title"
                 ),
-                300,
+                300
             )
 
             link = field(node, "link")
 
             if not link:
-                element = node.find(
+                el = node.find(
                     "{http://www.w3.org/2005/Atom}link"
                 )
-                if element is not None:
-                    link = element.get("href", "")
 
-            date = parse_date(
+                link = (
+                    el.get("href", "")
+                    if el is not None
+                    else ""
+                )
+
+            published = date_from(
                 field(
                     node,
                     "pubDate",
@@ -471,7 +383,7 @@ def get_source(source):
                     "updated",
                     "{http://www.w3.org/2005/Atom}published",
                     "{http://www.w3.org/2005/Atom}updated",
-                    "{http://purl.org/dc/elements/1.1/}date",
+                    "{http://purl.org/dc/elements/1.1/}date"
                 )
             )
 
@@ -479,96 +391,80 @@ def get_source(source):
                 field(node, "description"),
                 field(
                     node,
-                    "{http://purl.org/rss/1.0/modules/content/}encoded",
+                    "{http://purl.org/rss/1.0/modules/content/}encoded"
                 ),
                 field(
                     node,
-                    "{http://www.w3.org/2005/Atom}summary",
+                    "{http://www.w3.org/2005/Atom}summary"
                 ),
                 field(
                     node,
-                    "{http://www.w3.org/2005/Atom}content",
+                    "{http://www.w3.org/2005/Atom}content"
                 ),
             ]
 
             detail = max(
-                (
-                    clean(x, MAX_REPORT_CHARS)
-                    for x in descriptions
-                ),
+                (clean(x) for x in descriptions),
                 key=len,
-                default="",
+                default=""
             )
 
-            safe_link = safe_article_url(
-                link,
-                url,
-            )
+            safe = safe_url(link, feed)
 
-            if not title or not safe_link or not date:
-                continue
-
-            if not (
-                NOW - WINDOW <= date
-                <= NOW + dt.timedelta(minutes=5)
+            if (
+                not title
+                or not safe
+                or published is None
+                or not (
+                    NOW - WINDOW
+                    <= published
+                    <= NOW + dt.timedelta(minutes=5)
+                )
             ):
                 continue
 
-            articles.append({
+            result.append({
                 "title": title,
-                "url": safe_link,
+                "url": safe,
                 "source": name,
-                "source_feed": url,
-                "host": urlparse(safe_link).hostname,
+                "source_feed": feed,
                 "language": language,
                 "category": category(
                     title + " " + detail
                 ),
                 "detail": detail,
                 "detail_origin": "rss",
-                "published": int(
-                    date.timestamp()
-                ),
-                "published_iso": date.isoformat(),
+                "published": int(published.timestamp()),
+                "published_iso": published.isoformat()
             })
 
-        return name, articles, None
+        return name, result, None
 
-    except Exception as exc:
+    except Exception as ex:
         return (
             name,
             [],
-            f"{type(exc).__name__}: "
-            f"{str(exc)[:150]}",
+            f"{type(ex).__name__}: {str(ex)[:120]}"
         )
 
 
-def enrich_article(article):
-    article = dict(article)
+def enrich(item):
+    article = dict(item)
 
-    if len(article.get("detail", "")) >= MIN_RSS_DETAIL:
+    if len(article["detail"]) >= MIN_RSS_DETAIL:
         return article, False
 
-    extracted, error = extract_article(
-        article["url"],
-        article["source_feed"],
-    )
+    body = extract(article)
 
     if (
-        extracted
-        and len(extracted) >= (
-            len(article.get("detail", ""))
-            + MIN_EXTRACTED_GAIN
-        )
+        len(body)
+        >= len(article["detail"]) + MIN_EXTRA_GAIN
     ):
-        article["detail"] = extracted[
-            :MAX_REPORT_CHARS
-        ]
+        article["detail"] = body
         article["detail_origin"] = "article"
 
         article["category"] = category(
-            article["title"] + " "
-            + article["detail"]
+            article["title"] + " " + body
         )
 
         return article, True
@@ -577,14 +473,12 @@ def enrich_article(article):
 
 
 def build():
-    old = {}
+    previous = {}
 
-    if OUTPUT.exists():
+    if OUT.exists():
         try:
-            old = json.loads(
-                OUTPUT.read_text(
-                    encoding="utf-8"
-                )
+            previous = json.loads(
+                OUT.read_text(encoding="utf-8")
             )
         except (OSError, ValueError):
             pass
@@ -593,56 +487,48 @@ def build():
         max_workers=5
     ) as pool:
         gathered = list(
-            pool.map(
-                get_source,
-                SOURCES,
-            )
+            pool.map(get_source, SOURCES)
         )
 
     unique = {}
 
-    # Preserve Bengali-only behavior of old News Radio.
-    for _, articles, _ in gathered:
-        for article in articles:
-            if article["language"] != "bn":
+    for _, items, _ in gathered:
+        for a in items:
+            if a["language"] != "bn":
                 continue
 
-            key = article["url"].split("?")[0]
-
-            previous = unique.get(key)
+            key = a["url"].split("?")[0]
 
             if (
-                not previous
-                or len(article["detail"])
-                > len(previous["detail"])
+                key not in unique
+                or len(a["detail"])
+                > len(unique[key]["detail"])
             ):
-                unique[key] = article
+                unique[key] = a
 
     if not unique:
-        for article in old.get("articles", []):
+        for a in previous.get("articles", []):
             if (
-                article.get("language") == "bn"
-                and article.get("published", 0)
+                a.get("language") == "bn"
+                and a.get("published", 0)
                 >= int((NOW - WINDOW).timestamp())
             ):
                 unique[
-                    article["url"].split("?")[0]
-                ] = article
+                    a["url"].split("?")[0]
+                ] = a
 
     articles = sorted(
         unique.values(),
-        key=lambda item: item["published"],
-        reverse=True,
+        key=lambda a: a["published"],
+        reverse=True
     )[:MAX_ARTICLES]
 
-    # Only fetch a bounded number of full pages per run.
     candidates = [
-        (index, article)
-        for index, article in enumerate(articles)
+        (i, a)
+        for i, a in enumerate(articles)
         if (
-            len(article.get("detail", ""))
-            < MIN_RSS_DETAIL
-            and article.get("source_feed")
+            len(a.get("detail", "")) < MIN_RSS_DETAIL
+            and a.get("source_feed")
         )
     ][:MAX_ARTICLE_REQUESTS]
 
@@ -650,87 +536,79 @@ def build():
 
     if candidates:
         with concurrent.futures.ThreadPoolExecutor(
-            max_workers=4
+            max_workers=6
         ) as pool:
-            results = list(
+            enriched = list(
                 pool.map(
-                    enrich_article,
-                    [a for _, a in candidates],
+                    enrich,
+                    [a for _, a in candidates]
                 )
             )
 
-        for (index, _), (article, improved) in zip(
+        for (i, _), (a, changed) in zip(
             candidates,
-            results,
+            enriched
         ):
-            articles[index] = article
+            articles[i] = a
+            extracted_count += int(changed)
 
-            if improved:
-                extracted_count += 1
+    for a in articles:
+        a.pop("source_feed", None)
 
-    # Remove the internal source_feed field.
-    for article in articles:
-        article.pop(
-            "source_feed",
-            None,
+    if not articles and previous.get("articles"):
+        print(
+            "Feeds unavailable; preserved previous data"
         )
-
-    status = [
-        {
-            "source": name,
-            "ok": bool(items),
-            "count": len(items),
-            "error": error,
-        }
-        for name, items, error in gathered
-    ]
+        return
 
     payload = {
         "schema_version": 1,
-        "collector_version": "2.0",
+        "collector_version": "3.0",
         "generated_at": NOW.isoformat(),
         "lookback_hours": 36,
         "max_report_chars": MAX_REPORT_CHARS,
         "count": len(articles),
-        "fresh_results": sum(
-            len(item[1])
-            for item in gathered
-        ),
         "articles_extracted": extracted_count,
-        "sources": status,
-        "articles": articles,
+        "sources": [
+            {
+                "source": name,
+                "ok": bool(items),
+                "count": len(items),
+                "error": error
+            }
+            for name, items, error in gathered
+        ],
+        "articles": articles
     }
 
-    OUTPUT.parent.mkdir(
+    OUT.parent.mkdir(
         parents=True,
-        exist_ok=True,
+        exist_ok=True
     )
 
-    if not articles and old.get("articles"):
-        print(
-            "All feeds unavailable; "
-            "preserving previous JSON."
-        )
-        return
-
-    OUTPUT.write_text(
+    OUT.write_text(
         json.dumps(
             payload,
             ensure_ascii=False,
-            indent=2,
+            indent=2
         ) + "\n",
-        encoding="utf-8",
+        encoding="utf-8"
     )
 
     print(
         f"News count: {len(articles)} | "
-        f"Article extraction success: {extracted_count}"
+        f"New full articles: {extracted_count}"
     )
 
     print(
-        "News JSON saved:",
-        OUTPUT,
+        "Detailed >= 520 chars:",
+        sum(
+            len(a["detail"]) >= 520
+            for a in articles
+        )
     )
+
+    print("Saved:", OUT)
 
 
 if __name__ == "__main__":
