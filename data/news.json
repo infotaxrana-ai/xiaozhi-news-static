@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "collector_version": "3.0",
-  "generated_at": "2026-10-23T10:30:52.007455+00:00",
+  "generated_at": "2026-10-23T10:31:14.810135+00:00",
   "lookback_hours": 36,
   "max_report_chars": 2400,
   "count": 120,
@@ -39,6 +39,28 @@
     }
   ],
   "articles": [
+    {
+      "title": "মাদক কারবারিকে নিয়ে বাড়িতে অভিযান, গোয়ালঘরে মিললো ৯ হাজার ইয়াবা",
+      "url": "https://www.jagonews24.com/national/news/1171166",
+      "source": "জাগোনিউজ২৪",
+      "language": "bn",
+      "category": "বাংলাদেশ",
+      "detail": "চট্টগ্রামের বোয়ালখালীতে তসলিম (৩৮) নামের এক মাদক কারবারিকে নিয়ে অভিযান চালিয়ে গোয়ালঘর থেকে ৯ হাজারের বেশি ইয়াবা জব্দ করেছে...",
+      "detail_origin": "rss",
+      "published": 1792751377,
+      "published_iso": "2026-10-23T10:29:37+00:00"
+    },
+    {
+      "title": "কাজের নেশায় পরিবারকে হারানোর আক্ষেপ, কাঁদলেন আমির খান",
+      "url": "https://www.jagonews24.com/entertainment/bollywood/1171165",
+      "source": "জাগোনিউজ২৪",
+      "language": "bn",
+      "category": "বিনোদন",
+      "detail": "বলিউডের জনপ্রিয় অভিনেতা আমির খান। অভিনয়ের প্রতি একাগ্রতা তাকে এনে দিয়েছে সাফল্য ও খ্যাতি। তবে কাজের পেছনে ছুটতে গিয়ে পরিবারকে যথেষ্ট সময় দিতে পারেননি...",
+      "detail_origin": "rss",
+      "published": 1792751317,
+      "published_iso": "2026-10-23T10:28:37+00:00"
+    },
     {
       "title": "ফরিদপুরে বাসের সঙ্গে সংঘর্ষে অ্যাম্বুলেন্সের ৩ যাত্রী নিহত",
       "url": "https://www.jagonews24.com/country/news/1171164",
@@ -1336,28 +1358,6 @@
       "detail_origin": "rss",
       "published": 1792732071,
       "published_iso": "2026-10-23T05:07:51+00:00"
-    },
-    {
-      "title": "ভরিতে সোনার দাম কমলো ২১৫৮ টাকা",
-      "url": "https://www.jagonews24.com/economy/news/1171086",
-      "source": "জাগোনিউজ২৪",
-      "language": "bn",
-      "category": "বাংলাদেশ",
-      "detail": "ভরিতে সোনার দাম কমলো ২১৫৮ টাকা",
-      "detail_origin": "rss",
-      "published": 1792731900,
-      "published_iso": "2026-10-23T05:05:00+00:00"
-    },
-    {
-      "title": "সৌন্দর্য ফেরাতে গিয়ে দানব, কী আছে ‘ক্লেফেইস’র গল্পে?",
-      "url": "https://www.jagonews24.com/entertainment/news/1171085",
-      "source": "জাগোনিউজ২৪",
-      "language": "bn",
-      "category": "বাংলাদেশ",
-      "detail": "সৌন্দর্য ফেরাতে গিয়ে দানব, কী আছে ‘ক্লেফেইস’র গল্পে?",
-      "detail_origin": "rss",
-      "published": 1792731854,
-      "published_iso": "2026-10-23T05:04:14+00:00"
     }
   ]
 }
