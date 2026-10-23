@@ -2,7 +2,7 @@ name: Refresh Xiaozhi News JSON
 on:
   workflow_dispatch:
   schedule:
-    - cron: '17 */3 * * *'
+    - cron: '17 * * * *'
 permissions:
   contents: write
 jobs:
