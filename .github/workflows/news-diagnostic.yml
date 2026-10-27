@@ -21,7 +21,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Inspect all news sources and extraction
+      - name: Inspect News Collector v4
         shell: bash
         run: |
           python - <<'PY'
@@ -29,21 +29,18 @@ jobs:
           import datetime
           import importlib.util
           import json
-          import traceback
           import urllib.error
-          import urllib.request
           import xml.etree.ElementTree as ET
           from pathlib import Path
           from urllib.parse import urlparse
 
-          ROOT = Path(".")
-          SOURCE = ROOT / "build_news.py"
-          RAW = ROOT / "data/news.json"
-          RADIO = ROOT / "data/news_radio.json"
+          SOURCE = Path("build_news.py")
+          RAW = Path("data/news.json")
+          RADIO = Path("data/news_radio.json")
 
-          def section(name):
+          def section(title):
               print("\n" + "=" * 60)
-              print(name)
+              print(title)
               print("=" * 60, flush=True)
 
           def show(label, value):
@@ -59,9 +56,13 @@ jobs:
                   return {}
 
           section("01 - GITHUB RUN INFORMATION")
-          show("UTC now", datetime.datetime.now(
-              datetime.timezone.utc
-          ).isoformat())
+
+          show(
+              "UTC now",
+              datetime.datetime.now(
+                  datetime.timezone.utc
+              ).isoformat()
+          )
           show("Collector exists", SOURCE.exists())
           show("Raw JSON exists", RAW.exists())
           show("Radio JSON exists", RADIO.exists())
@@ -70,24 +71,17 @@ jobs:
               raise SystemExit("Missing build_news.py")
 
           spec = importlib.util.spec_from_file_location(
-              "news_diagnostic_collector",
-              SOURCE
+              "news_diagnostic_collector", SOURCE
           )
           collector = importlib.util.module_from_spec(spec)
           spec.loader.exec_module(collector)
 
-          show(
-              "Collector max articles",
-              getattr(collector, "MAX_ARTICLES", "?")
-          )
-          show(
-              "Article request limit",
-              getattr(collector, "MAX_ARTICLE_REQUESTS", "?")
-          )
-          show(
-              "Max detail characters",
-              getattr(collector, "MAX_REPORT_CHARS", "?")
-          )
+          show("Collector max stories",
+               getattr(collector, "MAX_STORIES", "?"))
+          show("Max detail characters",
+               getattr(collector, "MAX_TEXT", "?"))
+          show("Source definitions",
+               len(collector.SOURCES))
 
           raw = load_json(RAW)
           radio = load_json(RADIO)
@@ -100,76 +94,87 @@ jobs:
           ):
               items = dataset.get(key, [])
               counts = collections.Counter(
-                  item.get("source", "UNKNOWN")
-                  for item in items
+                  x.get("source", "UNKNOWN")
+                  for x in items
               )
               show(label + " total", len(items))
               show(label + " distribution", dict(counts))
 
-          show(
-              "Collector version",
-              raw.get("collector_version")
-          )
-          show(
-              "Source generated",
-              raw.get("generated_at")
-          )
-          show(
-              "Articles extracted",
-              raw.get("articles_extracted")
-          )
-          show(
-              "Extraction attempts",
-              raw.get("extraction_attempts")
-          )
-          show(
-              "Extraction diagnostics",
-              raw.get("extraction_diagnostics")
-          )
+          for key in (
+              "collector_version",
+              "generated_at",
+              "articles_extracted",
+              "extraction_diagnostics",
+              "translation_diagnostics",
+          ):
+              show(key, raw.get(key))
 
           section("03 - FINAL RADIO QUALITY")
 
           stories = radio.get("stories", [])
+
           multi = sum(
               len(x.get("parts", [])) > 1
               for x in stories
           )
-          total_parts = sum(
+          parts = sum(
               len(x.get("parts", []))
               for x in stories
           )
 
           show("Radio stories", len(stories))
           show("Multi-part stories", multi)
-          show("Single-part stories", len(stories) - multi)
-          show("Total TTS parts", total_parts)
-          show(
-              "Radio JSON bytes",
-              RADIO.stat().st_size if RADIO.exists() else 0
+          show("Single-part stories",
+               len(stories) - multi)
+          show("Total TTS parts", parts)
+          show("Radio bytes",
+               RADIO.stat().st_size
+               if RADIO.exists() else 0)
+
+          show("Intro URL", radio.get("intro_url"))
+          show("Intro enabled",
+               radio.get("anchor_intro", {}).get("enabled"))
+          show("Interactive", radio.get("interactive"))
+          show("Confirmation required",
+               radio.get("requires_user_confirmation"))
+
+          missing_parts = sum(
+              not x.get("parts")
+              for x in stories
           )
+          missing_sources = sum(
+              not x.get("source")
+              for x in stories
+          )
+
+          show("Stories missing parts", missing_parts)
+          show("Stories missing source", missing_sources)
 
           section("04 - RSS FEEDS AND ARTICLE COUNTS")
 
           source_reports = []
 
-          for name, feed, language in collector.SOURCES:
+          for source_spec in collector.SOURCES:
+              name, feed, language, domains = source_spec
+
               print(f"\nSOURCE: {name}", flush=True)
               show("Feed URL", feed)
               show("Language", language)
+              show("Allowed domains", domains)
 
               try:
-                  data, headers, final = collector.fetch(
+                  data, headers, final = collector.get(
                       feed,
-                      2_000_000,
-                      timeout=12
+                      cap=2_000_000,
+                      timeout=12,
+                      domains=domains
                   )
+
                   show("RSS HTTP", "SUCCESS")
                   show("Final RSS URL", final)
                   show("RSS bytes", len(data))
-                  show(
-                      "RSS content type",
-                      headers.get("Content-Type")
-                  )
+                  show("RSS content type",
+                       headers.get("Content-Type"))
 
                   root = ET.fromstring(data)
 
@@ -179,13 +184,15 @@ jobs:
                           "{http://www.w3.org/2005/Atom}entry"
                       )
                   )
+
                   show("RSS total items", len(items))
 
                   if items:
                       sample = items[0]
+
                       show(
                           "Sample title",
-                          collector.text_of(
+                          collector.field(
                               sample,
                               "title",
                               "{http://www.w3.org/2005/Atom}title"
@@ -194,7 +201,7 @@ jobs:
 
                       show(
                           "Sample date",
-                          collector.text_of(
+                          collector.field(
                               sample,
                               "pubDate",
                               "published",
@@ -206,70 +213,70 @@ jobs:
 
               except urllib.error.HTTPError as exc:
                   show("RSS HTTP ERROR", exc.code)
-                  show("RSS reason", exc.reason)
 
               except Exception as exc:
-                  show("RSS ERROR TYPE", type(exc).__name__)
-                  show("RSS ERROR MESSAGE", str(exc)[:300])
+                  show("RSS ERROR", repr(exc))
 
               try:
-                  result = collector.load_feed(
-                      (name, feed, language)
-                  )
-                  _, articles, error = result
+                  result = collector.rss(source_spec)
 
+                  _, articles, error, rss_count = result
+
+                  show("Collector RSS items", rss_count)
                   show("Valid recent articles", len(articles))
                   show("Collector error", error)
 
                   source_reports.append(
-                      (name, feed, articles)
+                      (name, feed, domains, articles)
                   )
 
               except Exception as exc:
                   show("FEED PARSER ERROR", repr(exc))
                   source_reports.append(
-                      (name, feed, [])
+                      (name, feed, domains, [])
                   )
 
-          section("05 - ARTICLE URL / HTTP / REDIRECT TEST")
+          section("05 - ARTICLE HTTP AND EXTRACTION TEST")
 
           http_errors = collections.Counter()
           extraction_status = collections.Counter()
 
-          for name, feed, articles in source_reports:
+          for name, feed, domains, articles in source_reports:
               print(f"\nSOURCE: {name}", flush=True)
+
               if not articles:
                   print("NO RECENT ARTICLES")
                   continue
 
-              # Inspect up to four real article URLs per source.
               for article in articles[:4]:
                   url = article.get("url", "")
-                  safe = collector.safe_link(url, feed)
+                  safe = collector.allowed(url, domains)
 
                   show("Title", article.get("title", "")[:100])
                   show("Host", urlparse(url).hostname)
-                  show("URL allowed", bool(safe))
-                  show("RSS detail chars", len(
-                      article.get("detail", "")
-                  ))
+                  show("URL allowed", safe)
+                  show(
+                      "RSS detail chars",
+                      len(article.get("detail", ""))
+                  )
 
                   if not safe:
                       extraction_status["unsafe_url"] += 1
                       continue
 
                   try:
-                      data, headers, final = collector.fetch(
-                          safe,
-                          1_500_000,
-                          timeout=9
+                      data, headers, final = collector.get(
+                          url,
+                          cap=1_500_000,
+                          timeout=9,
+                          domains=domains
                       )
 
                       show("HTTP result", "SUCCESS")
                       show("Final URL", final)
                       show(
                           "Final URL allowed",
-                          bool(collector.safe_link(final, feed))
+                          collector.allowed(final, domains)
                       )
                       show(
                           "Content type",
@@ -281,28 +288,15 @@ jobs:
 
                   except urllib.error.HTTPError as exc:
                       show("HTTP ERROR CODE", exc.code)
-                      show("HTTP ERROR REASON", exc.reason)
                       http_errors[str(exc.code)] += 1
 
-                  except urllib.error.URLError as exc:
-                      show("URL ERROR", repr(exc.reason))
-                      extraction_status["url_error"] += 1
-
-                  except ValueError as exc:
-                      show("VALUE ERROR", str(exc))
-                      extraction_status[
-                          "value_" + str(exc)[:60]
-                      ] += 1
-
                   except Exception as exc:
-                      show("UNEXPECTED ERROR", repr(exc))
-                      extraction_status[
-                          type(exc).__name__
-                      ] += 1
+                      show("HTTP ERROR", repr(exc))
+                      extraction_status["http_error"] += 1
 
                   try:
-                      body, status = collector.extract_article(
-                          article
+                      body, status = collector.full_text(
+                          article, domains
                       )
 
                       show("Extractor status", status)
@@ -310,14 +304,14 @@ jobs:
                       show(
                           "Improvement possible",
                           len(body) >= (
-                              len(article.get("detail", "")) + 80
+                              len(article.get("detail", "")) + 100
                           )
                       )
 
                       extraction_status[status] += 1
 
                   except Exception as exc:
-                      show("EXTRACTOR CRASH", repr(exc))
+                      show("EXTRACTOR ERROR", repr(exc))
                       extraction_status["extract_crash"] += 1
 
           section("06 - FINAL DIAGNOSTIC SUMMARY")
@@ -332,16 +326,35 @@ jobs:
 
           english_sources = [
               name
-              for name, _, lang in collector.SOURCES
-              if lang != "bn"
+              for name, _, language, _ in collector.SOURCES
+              if language == "en"
           ]
 
-          show("Non-Bengali sources", english_sources)
-
-          print(
-              "If the collector filters language != bn, "
-              "English RSS sources will not appear in radio."
+          show("English RSS sources", english_sources)
+          show(
+              "Translation diagnostics",
+              raw.get("translation_diagnostics", {})
           )
+
+          counts = collections.Counter(
+              x.get("source", "UNKNOWN")
+              for x in stories
+          )
+
+          if stories:
+              dominant, count = counts.most_common(1)[0]
+              percentage = round(
+                  100 * count / len(stories), 1
+              )
+
+              show("Dominant source", dominant)
+              show("Dominant percentage", percentage)
+
+              if percentage > 60:
+                  print(
+                      "WARNING: One source dominates "
+                      "the radio. Review collector balance."
+                  )
 
           section("08 - SAFETY REPORT")
 
