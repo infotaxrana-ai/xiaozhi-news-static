@@ -1,13 +1,12 @@
 
 #!/usr/bin/env python3
-"""Xiaozhi multi-source Bengali news collector v4."""
+"""Xiaozhi multi-source Bengali news collector v4 - safe fixes."""
 
 import concurrent.futures as cf
 import datetime as dt
 import email.utils
 import html
 import json
-import os
 import re
 import urllib.error
 import urllib.request
@@ -76,7 +75,6 @@ def tidy(value, limit=MAX_TEXT):
     value = html.unescape(
         re.sub(r"<[^>]*>", " ", str(value or ""))
     )
-
     return re.sub(
         r"\s+", " ", value
     ).strip()[:limit]
@@ -475,89 +473,6 @@ def rss(spec):
         )
 
 
-def translate(text, limit=480):
-    """
-    Official LibreTranslate-compatible API.
-    Never publish untranslated English as Bengali.
-    """
-    endpoint = os.environ.get(
-        "LIBRETRANSLATE_URL", ""
-    ).strip()
-
-    if not endpoint.startswith("https://"):
-        return None
-
-    api_key = os.environ.get(
-        "LIBRETRANSLATE_API_KEY", ""
-    )
-
-    chunks = []
-    chunk = ""
-
-    for word in text.split():
-        if (
-            len(chunk) + len(word) + 1 > limit
-            and chunk
-        ):
-            chunks.append(chunk)
-            chunk = ""
-
-        chunk = (chunk + " " + word).strip()
-
-    if chunk:
-        chunks.append(chunk)
-
-    output = []
-
-    for part in chunks:
-        payload = {
-            "q": part,
-            "source": "en",
-            "target": "bn",
-            "format": "text"
-        }
-
-        if api_key:
-            payload["api_key"] = api_key
-
-        request = urllib.request.Request(
-            endpoint,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json"
-            },
-            method="POST"
-        )
-
-        with urllib.request.urlopen(
-            request, timeout=18
-        ) as response:
-
-            if urlparse(
-                response.geturl()
-            ).scheme != "https":
-                return None
-
-            result = json.loads(
-                response.read(250_000)
-            )
-
-        translated = result.get(
-            "translatedText", ""
-        )
-
-        if (
-            not isinstance(translated, str)
-            or not translated.strip()
-        ):
-            return None
-
-        output.append(translated.strip())
-
-    return tidy(" ".join(output))
-
-
 def build():
     previous = {}
 
@@ -595,12 +510,17 @@ def build():
         })
 
     # Enrich genuinely short articles.
+    # Preserve RSS detail for sources blocking article HTML.
     jobs = []
 
     for spec in SOURCES:
         articles = groups[spec[0]]
 
         for article in articles:
+            if spec[0] == "জাগোনিউজ২৪":
+                extraction_stats["rss_only_jagonews"] += 1
+                continue
+
             if len(article["detail"]) < 1800:
                 jobs.append(
                     (article, spec[3])
@@ -640,50 +560,17 @@ def build():
         for status in pool.map(enrich, jobs):
             extraction_stats[status] += 1
 
-    # English-to-Bengali translation.
-    # Fail closed: no untranslated English in radio.
+    # English sources are handled by the existing
+    # free offline Argos translator in the next
+    # GitHub Actions workflow step.
+    # Never publish untranslated English articles here.
     for spec in SOURCES:
         name, _, language, _ = spec
 
-        if language != "en":
-            continue
+        if language == "en":
+            groups[name] = []
 
-        converted = []
-
-        for article in groups[name][:12]:
-            try:
-                title = translate(
-                    article["title"]
-                )
-
-                detail = (
-                    translate(article["detail"])
-                    if article["detail"]
-                    else ""
-                )
-
-                if not title or not detail:
-                    translation_stats["unavailable"] += 1
-                    continue
-
-                article["title"] = title
-                article["detail"] = detail
-                article["language"] = "bn"
-                article["detail_origin"] = "translation"
-
-                article["category"] = category(
-                    title + " " + detail
-                )
-
-                converted.append(article)
-                translation_stats["success"] += 1
-
-            except Exception as error:
-                translation_stats[
-                    type(error).__name__
-                ] += 1
-
-        groups[name] = converted
+    translation_stats["delegated_to_offline_argos"] = 1
 
     # Balanced selection, maximum 28 per source first.
     selected = []
